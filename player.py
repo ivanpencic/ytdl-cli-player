@@ -21,6 +21,7 @@ from textual.widgets import Footer, Header, Label, Static
 from audio_player import AudioPlayer
 from download import make_ydl_opts
 from models import OUTPUT_DIR, PLAYLISTS_DIR, RECOMMENDED_DIR
+from mpris import start_mpris
 from playlist import PlaylistManager
 from screens import LibraryScreen, PlaylistScreen, SavedPlaylistsScreen, SavePlaylistScreen, SearchScreen
 from utils import move_to_artist_subdir, normalize_title, scan_songs, song_label, yt_radio, yt_video_id
@@ -57,6 +58,7 @@ class YtdlApp(App):
     BINDINGS = [
         Binding("p",            "play_pause",         "Play/Pause",  show=True),
         Binding("n",            "skip",               "Next",        show=True),
+        Binding("b",            "previous",           "Prev",        show=True),
         Binding("a",            "toggle_autoplay",    "Autoplay",    show=True),
         Binding("r",            "toggle_recommended", "Recommended", show=True),
         Binding("ctrl+f",       "search",             "Search",      show=True),
@@ -79,6 +81,7 @@ class YtdlApp(App):
         self._refilling = False
         self._fetch_rec_pending = False
         self._last_played: Optional[Path] = None
+        self._mpris = None
 
     def compose(self) -> ComposeResult:
         yield Header(show_clock=True)
@@ -94,6 +97,11 @@ class YtdlApp(App):
         yield Footer()
 
     def on_mount(self):
+        self._mpris = start_mpris(
+            on_next=lambda: self.call_from_thread(self.action_skip),
+            on_previous=lambda: self.call_from_thread(self.action_previous),
+            on_play_pause=lambda: self.call_from_thread(self.action_play_pause),
+        )
         self._load_random_local()
         self._refresh_main()
         if not scan_songs():
@@ -181,6 +189,26 @@ class YtdlApp(App):
         self._refresh_main()
         if len(self._playlist.all_upcoming()) <= 1:
             self._refill_queue()
+
+    def _play_prev(self):
+        path = self._playlist.go_back()
+        if path:
+            self._last_played = path
+            self._player.play(str(path))
+        self._refresh_main()
+
+    def _update_mpris(self):
+        if not self._mpris:
+            return
+        cur = self._playlist.current
+        title = song_label(cur) if cur else ""
+        if self._player.paused:
+            status = "Paused"
+        elif self._player.playing:
+            status = "Playing"
+        else:
+            status = "Stopped"
+        self._mpris.update(title, status)
 
     def _fetch_one_recommendation(
         self,
@@ -322,6 +350,7 @@ class YtdlApp(App):
             self.query_one("#un-list", Static).update("\n".join(lines))
         except Exception:
             pass
+        self._update_mpris()
 
     # ── Actions ───────────────────────────────────────────────────────────────
 
@@ -355,6 +384,9 @@ class YtdlApp(App):
 
     def action_skip(self):
         self._play_next()
+
+    def action_previous(self):
+        self._play_prev()
 
     def action_search(self):
         if len(self.screen_stack) > 1:
@@ -514,6 +546,8 @@ class YtdlApp(App):
 
     def action_quit(self):
         self._player.stop()
+        if self._mpris:
+            self._mpris.stop()
         self.exit()
 
 

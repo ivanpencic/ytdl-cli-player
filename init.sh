@@ -6,7 +6,12 @@ cd "$(dirname "$0")"
 if [ ! -f "env/bin/python" ] || ! env/bin/python -m pip --version &>/dev/null; then
     echo "Creating virtual environment..."
     rm -rf env
-    python3 -m venv env
+    python3 -m venv --system-site-packages env
+    env/bin/python -m ensurepip --upgrade
+elif ! env/bin/python -c "import dbus" &>/dev/null; then
+    echo "Recreating venv with system-site-packages (needed for MPRIS2)..."
+    rm -rf env
+    python3 -m venv --system-site-packages env
     env/bin/python -m ensurepip --upgrade
 fi
 

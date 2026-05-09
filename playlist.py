@@ -24,6 +24,14 @@ class PlaylistManager:
                 return self._queue[self._current]
             return None
 
+    def go_back(self) -> Optional[Path]:
+        with self._lock:
+            if self._current > 0:
+                self._current -= 1
+            if 0 <= self._current < len(self._queue):
+                return self._queue[self._current]
+            return None
+
     @property
     def current(self) -> Optional[Path]:
         with self._lock:
