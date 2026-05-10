@@ -81,7 +81,6 @@ Type a song name → `Enter` to play, `Esc` to close search.
 - Downloads audio via `yt-dlp`, converts to MP3 192kbps via `ffmpeg`
 - Plays offline with `ffplay` after download
 - Downloads saved to `downloads/`, recommended songs to `downloads/recommended/`
-- Uses Brave browser cookies for age-restricted content (`cookiesfrombrowser: brave`)
 - Queue auto-refills: 4 random local songs in normal mode, YouTube recommendations in recommended mode
 
 ---

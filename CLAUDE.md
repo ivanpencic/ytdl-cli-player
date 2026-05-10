@@ -225,7 +225,7 @@ Triggered automatically when `upcoming` drops to ≤ 1 song:
 - [ ] **Shuffle mode** — shuffle the upcoming queue in-place.
 - [ ] **Repeat one / repeat all** — repeat current song or loop the queue.
 - [ ] **Smart deduplication across queue** — prevent the same song from appearing twice in the upcoming list.
-- [ ] **Config file** — externalize hardcoded values (Brave cookie source, MP3 quality, music filter thresholds, initial random count).
+- [ ] **Config file** — externalize hardcoded values (MP3 quality, music filter thresholds, initial random count).
 - [ ] **Notification system** — use desktop notifications (via `notify-send`) for song changes instead of / in addition to in-app toasts.
 - [ ] **Switch from `ffplay` to `mpv`** — enables: seek, volume, elapsed/remaining time display, better codec support.
 - [ ] **Library deletion** — delete song from disk directly from `LibraryScreen`.
