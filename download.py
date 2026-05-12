@@ -38,14 +38,7 @@ def make_ydl_opts(
     out_dir = RECOMMENDED_DIR if recommended else OUTPUT_DIR
     out_dir.mkdir(parents=True, exist_ok=True)
     opts = {
-        "format": "bestaudio[ext=m4a]/bestaudio[ext=webm]/bestaudio",
-        "postprocessors": [
-            {
-                "key": "FFmpegExtractAudio",
-                "preferredcodec": "mp3",
-                "preferredquality": "192",
-            }
-        ],
+        "format": "bestaudio[ext=webm]/bestaudio[ext=m4a]/bestaudio",
         "outtmpl": str(out_dir / "%(title)s.%(ext)s"),
         "noplaylist": single,
         "ignoreerrors": True,

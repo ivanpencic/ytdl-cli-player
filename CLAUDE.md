@@ -4,7 +4,7 @@
 
 ## Overview
 
-Terminal-based YouTube audio player (TUI) built with [Textual](https://textual.textualize.io/). Downloads audio via `yt-dlp`, converts to MP3 using `ffmpeg`, and plays with `ffplay` (part of FFmpeg). All playback is offline after download.
+Terminal-based YouTube audio player (TUI) built with [Textual](https://textual.textualize.io/). Downloads audio via `yt-dlp` in native format (opus/webm preferred, m4a fallback) and plays with `ffplay` (part of FFmpeg). All playback is offline after download.
 
 **Entry point:** `start.sh` → `env/bin/python player.py`
 
@@ -15,7 +15,7 @@ Terminal-based YouTube audio player (TUI) built with [Textual](https://textual.t
 | Tool / Library | Role |
 |---|---|
 | `yt-dlp` | YouTube search and audio download |
-| `ffmpeg` / `ffplay` | Audio conversion (M4A/WebM → MP3) and playback |
+| `ffplay` | Audio playback |
 | `textual` | Terminal UI framework |
 
 Python venv is at `env/`. Activate with `source env/bin/activate` or run via `start.sh`.
@@ -35,12 +35,12 @@ ytdl/
 ├── screens.py         # All modal screens (Search, Playlist, Library, SavePlaylist, SavedPlaylists, RecommendedPrompt)
 ├── start.sh           # Launch script (cd to dir + uses venv)
 ├── env/               # Python virtual environment
-├── downloads/         # All downloaded MP3s
+├── downloads/         # All downloaded audio files (webm/m4a)
 │   ├── <Artist>/
-│   │   └── <Title>.mp3
+│   │   └── <Title>.<ext>
 │   ├── recommended/   # Songs downloaded via Recommended mode
 │   │   ├── <Artist>/
-│   │   │   └── <Title>.mp3
+│   │   │   └── <Title>.<ext>
 │   │   └── .archive   # yt-dlp archive (prevents re-downloads)
 │   └── .archive       # yt-dlp archive for regular downloads
 └── playlists/         # Saved playlists (JSON files)
@@ -49,7 +49,7 @@ ytdl/
 
 > `start.sh` does `cd "$(dirname "$0")"` before running `python player.py`, so all modules use simple absolute imports (`from models import ...`) without needing a package or `sys.path` manipulation.
 
-MP3 filenames follow the pattern: `<Title>.mp3` (no YouTube ID in filename). After download, files are moved into `<Artist>/` subdirectory using `move_to_artist_subdir`.
+Filenames follow the pattern: `<Title>.<ext>` (no YouTube ID in filename). After download, files are moved into `<Artist>/` subdirectory using `move_to_artist_subdir`.
 
 ---
 
@@ -177,8 +177,8 @@ Triggered automatically when `upcoming` drops to ≤ 1 song:
 - Results with `[YT]` prefix displayed in warning color (yellow) in search list.
 
 ### Download
-- Format: best audio (prefers m4a/webm), converted to MP3 192kbps via FFmpeg postprocessor.
-- Output path: `downloads/<title>.mp3` initially; then moved to `downloads/<artist>/<title>.mp3` via `move_to_artist_subdir` (splits on `" - "` in the filename stem).
+- Format: best audio (prefers opus/webm, fallback m4a), no conversion — native format kept.
+- Output path: `downloads/<title>.<ext>` initially; then moved to `downloads/<artist>/<title>.<ext>` via `move_to_artist_subdir` (splits on `" - "` in the filename stem).
 - Download archive at `downloads/.archive` (or `recommended/.archive`) prevents re-downloading.
 - Music filter (used in recommended mode): rejects audio < 90s or > 15min, and titles containing non-music keywords (podcast, interview, news, etc.).
 
@@ -225,7 +225,7 @@ Triggered automatically when `upcoming` drops to ≤ 1 song:
 - [ ] **Shuffle mode** — shuffle the upcoming queue in-place.
 - [ ] **Repeat one / repeat all** — repeat current song or loop the queue.
 - [ ] **Smart deduplication across queue** — prevent the same song from appearing twice in the upcoming list.
-- [ ] **Config file** — externalize hardcoded values (MP3 quality, music filter thresholds, initial random count).
+- [ ] **Config file** — externalize hardcoded values (music filter thresholds, initial random count, preferred audio format).
 - [ ] **Notification system** — use desktop notifications (via `notify-send`) for song changes instead of / in addition to in-app toasts.
 - [ ] **Switch from `ffplay` to `mpv`** — enables: seek, volume, elapsed/remaining time display, better codec support.
 - [ ] **Library deletion** — delete song from disk directly from `LibraryScreen`.

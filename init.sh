@@ -31,7 +31,7 @@ else
     echo "Dependencies already installed."
 fi
 
-if ! command -v ffmpeg >/dev/null 2>&1 || ! command -v ffplay >/dev/null 2>&1; then
-    echo "Installing ffmpeg..."
+if ! command -v ffplay >/dev/null 2>&1; then
+    echo "Installing ffplay..."
     sudo apt install -y ffmpeg
 fi

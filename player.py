@@ -137,8 +137,6 @@ class YtdlApp(App):
                 orig = Path(d.get("filename", ""))
                 if orig.name:
                     found.append(orig)
-                self._dl_status = "⚙  Converting to MP3..."
-                self.call_from_thread(self._update_dl_label)
             elif d["status"] == "error":
                 self._dl_status = "✗  Error"
                 self.call_from_thread(self._update_dl_label)
@@ -151,12 +149,10 @@ class YtdlApp(App):
                 )
                 with yt_dlp.YoutubeDL(opts) as ydl:
                     ydl.download([url])
-                # ydl.download() blocks until FFmpeg finishes — MP3 files now exist
                 if on_file:
-                    for orig in found:
-                        mp3 = orig.with_suffix(".mp3")
-                        if mp3.exists():
-                            on_file(mp3)
+                    for path in found:
+                        if path.exists():
+                            on_file(path)
                 self._dl_status = "✓  Done"
             except Exception as e:
                 self._dl_status = f"✗  {e}"
@@ -216,7 +212,7 @@ class YtdlApp(App):
         on_found: Callable[[Path], None],
         on_not_found: Optional[Callable[[], None]] = None,
     ):
-        """Fetch one YouTube recommendation for cur_path. Calls on_found(mp3) or on_not_found()."""
+        """Fetch one YouTube recommendation for cur_path. Calls on_found(path) or on_not_found()."""
         current_title_norm = normalize_title(song_label(cur_path))
         archived_ids: set = set()
         archive_path = RECOMMENDED_DIR / ".archive"
@@ -251,9 +247,9 @@ class YtdlApp(App):
 
                     self.call_from_thread(self.notify, f"Rec: {r.display[6:][:50]}", timeout=3)
 
-                    def _on_file(mp3: Path):
-                        mp3 = move_to_artist_subdir(mp3, RECOMMENDED_DIR)
-                        on_found(mp3)
+                    def _on_file(path: Path):
+                        path = move_to_artist_subdir(path, RECOMMENDED_DIR)
+                        on_found(path)
 
                     self._start_download(r.yt_url, single=True, on_file=_on_file, music_only=True, recommended=True)
                     return
@@ -277,8 +273,8 @@ class YtdlApp(App):
                 self._refilling = False
                 return
 
-            def on_found(mp3: Path):
-                self._playlist.add(mp3)
+            def on_found(path: Path):
+                self._playlist.add(path)
                 self.call_from_thread(self._refresh_main)
                 self._refilling = False
                 if not self._player.playing:
@@ -407,9 +403,9 @@ class YtdlApp(App):
                 self._play_next()
             else:
                 self.notify(f"Downloading: {item.display[6:][:50]}...", timeout=3)
-                def on_file_now(mp3: Path):
-                    mp3 = move_to_artist_subdir(mp3, OUTPUT_DIR)
-                    self._playlist.add_next(mp3)
+                def on_file_now(path: Path):
+                    path = move_to_artist_subdir(path, OUTPUT_DIR)
+                    self._playlist.add_next(path)
                     self._player.stop()
                     self.call_from_thread(self._play_next)
                 self._start_download(item.yt_url, single=True, on_file=on_file_now)
@@ -425,13 +421,13 @@ class YtdlApp(App):
                 _action = action
                 self.notify(f"Downloading: {item.display[6:][:50]}...", timeout=3)
 
-                def on_file(mp3: Path, a=_action):
-                    mp3 = move_to_artist_subdir(mp3, OUTPUT_DIR)
+                def on_file(path: Path, a=_action):
+                    path = move_to_artist_subdir(path, OUTPUT_DIR)
                     if a == "next":
-                        self._playlist.add_next(mp3)
+                        self._playlist.add_next(path)
                     else:
-                        self._playlist.add(mp3)
-                    self.app.call_from_thread(self.notify, f"Done: {song_label(mp3)}", timeout=3)
+                        self._playlist.add(path)
+                    self.app.call_from_thread(self.notify, f"Done: {song_label(path)}", timeout=3)
                     self.app.call_from_thread(self._refresh_main)
 
                 self._start_download(item.yt_url, single=True, on_file=on_file)
@@ -533,8 +529,8 @@ class YtdlApp(App):
         self._fetch_rec_pending = True
         self.notify(f"Fetching recommendation for: {song_label(cur)[:50]}", timeout=3)
 
-        def on_found(mp3: Path):
-            self._playlist.replace_next(mp3)
+        def on_found(path: Path):
+            self._playlist.replace_next(path)
             self.call_from_thread(self._refresh_main)
             self._fetch_rec_pending = False
 

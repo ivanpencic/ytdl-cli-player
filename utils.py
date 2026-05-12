@@ -15,16 +15,15 @@ def extract_artist(title: str) -> Optional[str]:
     return None
 
 
-def move_to_artist_subdir(mp3: Path, base_dir: Path) -> Path:
-    """Move mp3 into base_dir/<artist>/ using the artist extracted from the filename stem."""
-    artist = extract_artist(mp3.stem)
+def move_to_artist_subdir(path: Path, base_dir: Path) -> Path:
+    artist = extract_artist(path.stem)
     if not artist:
-        return mp3
+        return path
     target_dir = base_dir / artist
     target_dir.mkdir(parents=True, exist_ok=True)
-    new_path = target_dir / mp3.name
-    if new_path != mp3:
-        mp3.rename(new_path)
+    new_path = target_dir / path.name
+    if new_path != path:
+        path.rename(new_path)
     return new_path
 
 
@@ -43,7 +42,8 @@ def normalize_title(title: str) -> str:
 def scan_songs() -> List[SearchResult]:
     if not OUTPUT_DIR.exists():
         return []
-    paths = sorted(OUTPUT_DIR.rglob("*.mp3"))
+    exts = {"*.mp3", "*.webm", "*.m4a", "*.opus"}
+    paths = sorted(p for ext in exts for p in OUTPUT_DIR.rglob(ext))
     return [SearchResult(display=song_label(p), local_path=p) for p in paths]
 
 

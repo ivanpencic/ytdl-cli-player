@@ -78,7 +78,7 @@ Type a song name → `Enter` to play, `Esc` to close search.
 
 ## How it works
 
-- Downloads audio via `yt-dlp`, converts to MP3 192kbps via `ffmpeg`
+- Downloads audio via `yt-dlp` in native format (opus/webm preferred, m4a fallback)
 - Plays offline with `ffplay` after download
 - Downloads saved to `downloads/`, recommended songs to `downloads/recommended/`
 - Queue auto-refills: 4 random local songs in normal mode, YouTube recommendations in recommended mode
@@ -89,6 +89,6 @@ Type a song name → `Enter` to play, `Esc` to close search.
 
 | Dependency | Install |
 |---|---|
-| `ffmpeg` + `ffplay` | `sudo apt install ffmpeg` |
+| `ffplay` | `sudo apt install ffmpeg` |
 | `python3-venv` | `sudo apt install python3.13-venv` |
 | `textual`, `yt-dlp` | installed automatically by `init.sh` |
