@@ -1,4 +1,5 @@
 import json
+import time
 from pathlib import Path
 from typing import List, Optional
 
@@ -12,54 +13,58 @@ from textual.widgets import Input, Label, ListItem, ListView, Static
 
 from models import PLAYLISTS_DIR, SearchResult
 from playlist import PlaylistManager
-from utils import song_label, yt_search
+from utils import delete_song_file, song_label, yt_filename_stem, yt_search
 
 
-# ─── Recommended Prompt ───────────────────────────────────────────────────────
+# ─── Confirm Prompt ───────────────────────────────────────────────────────────
 
-class RecommendedPrompt(ModalScreen):
+class ConfirmPrompt(ModalScreen):
+    """Yes/No dialog. Dismisses with True (yes) or False (no / Esc)."""
+
     CSS = """
-    RecommendedPrompt { align: center middle; }
-    #rp-box {
-        width: 70; height: 13;
+    ConfirmPrompt { align: center middle; }
+    #cp-box {
+        width: 70; height: auto;
         background: $surface;
-        border: solid $accent;
-        padding: 2 4;
-        align: center middle;
+        border: solid $error;
+        padding: 1 4;
     }
-    #rp-title  { text-align: center; text-style: bold; margin-bottom: 2; }
-    #rp-opts   { width: 100%; height: 3; align: center middle; }
-    .rp-btn    { width: 20; height: 3; border: solid $panel; content-align: center middle; margin: 0 1; }
-    .rp-active { border: solid $accent; color: $accent; text-style: bold; }
+    #cp-title  { width: 100%; text-align: center; text-style: bold; margin-bottom: 1; }
+    #cp-opts   { width: 100%; height: 3; align: center middle; }
+    .cp-btn    { width: 20; height: 3; border: solid $panel; content-align: center middle; margin: 0 1; }
+    .cp-active { border: solid $accent; color: $accent; text-style: bold; }
     """
     BINDINGS = [
-        Binding("left",   "pick_yes",  "", show=False),
-        Binding("right",  "pick_no",   "", show=False),
-        Binding("y",      "pick_yes",  "", show=False),
-        Binding("n",      "pick_no",   "", show=False),
-        Binding("enter",  "confirm",   "Confirm"),
-        Binding("escape", "cancel",    "Cancel"),
+        Binding("left",   "pick_yes", "", show=False),
+        Binding("right",  "pick_no",  "", show=False),
+        Binding("y",      "pick_yes", "", show=False),
+        Binding("n",      "pick_no",  "", show=False),
+        Binding("enter",  "confirm",  "Confirm", priority=True),
+        Binding("escape", "cancel",   "Cancel"),
     ]
 
-    _choice: reactive[bool] = reactive(True)
+    _choice: reactive[bool] = reactive(False)
+
+    def __init__(self, message: str, default: bool = False):
+        super().__init__()
+        self._message = message
+        self._default = default
 
     def compose(self) -> ComposeResult:
-        with Container(id="rp-box"):
-            yield Label("Start downloading\nrecommended songs?", id="rp-title")
-            with Horizontal(id="rp-opts"):
-                yield Static("  ✔  Yes  ", id="rp-yes", classes="rp-btn rp-active")
-                yield Static("  ✘  No   ", id="rp-no",  classes="rp-btn")
+        with Container(id="cp-box"):
+            yield Label(self._message, id="cp-title")
+            with Horizontal(id="cp-opts"):
+                yield Static("Yes", id="cp-yes", classes="cp-btn")
+                yield Static("No",  id="cp-no",  classes="cp-btn")
+
+    def on_mount(self):
+        self._choice = self._default
+        self.watch__choice(self._choice)
 
     def watch__choice(self, val: bool):
         try:
-            yes = self.query_one("#rp-yes", Static)
-            no  = self.query_one("#rp-no",  Static)
-            if val:
-                yes.add_class("rp-active")
-                no.remove_class("rp-active")
-            else:
-                no.add_class("rp-active")
-                yes.remove_class("rp-active")
+            self.query_one("#cp-yes", Static).set_class(val, "cp-active")
+            self.query_one("#cp-no",  Static).set_class(not val, "cp-active")
         except Exception:
             pass
 
@@ -68,6 +73,12 @@ class RecommendedPrompt(ModalScreen):
 
     def action_pick_no(self):
         self._choice = False
+
+    def action_play_highlighted_next(self):
+        """Queues the highlighted song right after the current one, ignoring checked items."""
+        item = self._highlighted()
+        if item:
+            self.dismiss(("next", [item]))
 
     def action_confirm(self):
         self.dismiss(self._choice)
@@ -79,7 +90,11 @@ class RecommendedPrompt(ModalScreen):
 # ─── Search Screen ────────────────────────────────────────────────────────────
 
 class SearchScreen(ModalScreen):
-    """Ctrl+F — local + YouTube search, Space to check items"""
+    """Ctrl+F — local + YouTube search.
+
+    Enter with nothing checked plays the highlighted song immediately (downloading it
+    first if needed). Enter with checked songs appends them to the queue.
+    """
 
     CSS = """
     SearchScreen { align: center middle; }
@@ -94,29 +109,34 @@ class SearchScreen(ModalScreen):
     #sb-input  { margin-bottom: 1; }
     #sb-status { color: $text-muted; height: 1; margin-bottom: 1; }
     #sb-list   { height: 1fr; }
-    .local-item { color: $text; }
-    .yt-item    { color: $warning; }
+    .yt-item   { color: $warning; }
     """
 
     BINDINGS = [
-        Binding("enter",      "close",      "Add to queue", priority=True),
-        Binding("ctrl+space", "play_next",  "Play Next"),
+        Binding("enter",       "confirm",              "Play / Add checked", priority=True),
+        # Most terminals send Shift+Enter as plain Enter; Ctrl+N works everywhere
+        Binding("ctrl+n",      "play_highlighted_next", "Next (highlighted)", priority=True),
+        Binding("shift+enter", "play_highlighted_next", "", show=False, priority=True),
         Binding("escape",     "dismiss",    "Close"),
         Binding("tab",        "focus_list", "List"),
     ]
 
+    MAX_SHOWN = 200
+
     def __init__(self, local: List[SearchResult]):
         super().__init__()
         self._local = local
+        self._local_by_stem = {r.local_path.stem: r for r in local}
         self._results: List[SearchResult] = list(local)
-        self._checked: set[SearchResult] = set()
+        self._checked: List[SearchResult] = []
         self._current_query = ""
 
     def compose(self) -> ComposeResult:
         with Container(id="sb-box"):
             yield Label("Search  (local + YouTube)", id="sb-title")
             yield Label(
-                "↑↓: navigate  |  Space: check  |  Enter: play highlighted / add checked  |  Ctrl+Space: play next  |  Esc: close",
+                "Up/Down: navigate  |  Space: check  |  Enter: play highlighted now / add checked to queue"
+                "  |  Ctrl+N: highlighted plays next  |  Esc: close",
                 id="sb-hint",
             )
             yield Input(placeholder="Song name...", id="sb-input")
@@ -143,20 +163,28 @@ class SearchScreen(ModalScreen):
 
     @work(thread=True, exclusive=True)
     def _yt_search(self, query: str) -> None:
-        import time
         time.sleep(0.4)
         if self._current_query != query:
             return
         results = yt_search(query)
-        self.app.call_from_thread(self._add_yt_results, results)
+        self.app.call_from_thread(self._add_yt_results, query, results)
 
-    def _add_yt_results(self, yt: List[SearchResult]):
-        local_labels = {r.display for r in self._results}
-        new = [r for r in yt if r.display not in local_labels]
+    def _add_yt_results(self, query: str, yt: List[SearchResult]):
+        # Thread workers can't be interrupted, so a slow search may finish after the query changed
+        if query != self._current_query:
+            return
+        shown = set(self._results)
+        new: List[SearchResult] = []
+        for r in yt:
+            # Songs already on disk are offered as local items instead of being downloaded again
+            r = self._local_by_stem.get(yt_filename_stem(r.title), r)
+            if r not in shown:
+                shown.add(r)
+                new.append(r)
         self._results = self._results + new
-        count = len(new)
-        self._set_status(f"Found {count} YouTube results" if count else "No new YT results")
-        self._refresh_list()
+        yt_count = sum(1 for r in new if not r.is_local)
+        self._set_status(f"Found {yt_count} YouTube results" if yt_count else "No new YouTube results")
+        self._refresh_list(keep_index=self.query_one("#sb-list", ListView).index)
 
     def _set_status(self, text: str):
         try:
@@ -167,9 +195,10 @@ class SearchScreen(ModalScreen):
     def _refresh_list(self, keep_index: Optional[int] = None):
         lv = self.query_one("#sb-list", ListView)
         lv.clear()
-        for r in self._results[:200]:
-            mark = "☑" if r in self._checked else "☐"
-            lv.append(ListItem(Label(f"  {mark}  {r.display}")))
+        for r in self._results[:self.MAX_SHOWN]:
+            mark = "[x]" if r in self._checked else "[ ]"
+            classes = "" if r.is_local else "yt-item"
+            lv.append(ListItem(Label(f"  {mark}  {r.display}", classes=classes)))
         if keep_index is not None:
             self.call_after_refresh(lambda: setattr(lv, "index", keep_index))
 
@@ -177,10 +206,20 @@ class SearchScreen(ModalScreen):
         if idx < len(self._results):
             r = self._results[idx]
             if r in self._checked:
-                self._checked.discard(r)
+                self._checked.remove(r)
             else:
-                self._checked.add(r)
+                self._checked.append(r)
             self._refresh_list(keep_index=idx)
+
+    def _highlighted(self) -> Optional[SearchResult]:
+        """Highlighted list item; from the input box this falls back to the top result."""
+        lv = self.query_one("#sb-list", ListView)
+        idx = lv.index
+        if idx is None and not lv.has_focus:
+            idx = 0
+        if idx is not None and idx < min(len(self._results), self.MAX_SHOWN):
+            return self._results[idx]
+        return None
 
     def on_key(self, event: events.Key):
         lv = self.query_one("#sb-list", ListView)
@@ -204,18 +243,19 @@ class SearchScreen(ModalScreen):
         if lv.index is None and self._results:
             lv.index = 0
 
-    def action_play_next(self):
-        self.dismiss(("next", list(self._checked)) if self._checked else None)
+    def action_play_highlighted_next(self):
+        """Queues the highlighted song right after the current one, ignoring checked items."""
+        item = self._highlighted()
+        if item:
+            self.dismiss(("next", [item]))
 
-    def action_close(self):
+    def action_confirm(self):
         if self._checked:
             self.dismiss(("queue", list(self._checked)))
             return
-        lv = self.query_one("#sb-list", ListView)
-        if lv.has_focus and lv.index is not None and lv.index < len(self._results):
-            self.dismiss(("play_now", [self._results[lv.index]]))
-        else:
-            self.dismiss(None)
+        item = self._highlighted()
+        if item:
+            self.dismiss(("play_now", [item]))
 
 
 # ─── Playlist Screen ──────────────────────────────────────────────────────────
@@ -240,6 +280,7 @@ class PlaylistScreen(ModalScreen):
         Binding("ctrl+down", "move_down",     "Move down"),
         Binding("d",         "delete",        "Delete"),
         Binding("delete",    "delete",        "",          show=False),
+        Binding("shift+delete", "delete_file", "Delete file"),
         Binding("ctrl+d",    "delete_all",    "Delete all"),
     ]
 
@@ -250,9 +291,10 @@ class PlaylistScreen(ModalScreen):
     def compose(self) -> ComposeResult:
         songs = self._playlist.all_upcoming()
         with Container(id="pl-box"):
-            yield Label(f"Playlist — {len(songs)} songs in queue", id="pl-title")
+            yield Label(f"Playlist - {len(songs)} songs in queue", id="pl-title")
             yield Label(
-                "↑↓: navigate  |  Ctrl+↑↓: reorder  |  d: delete  |  Ctrl+D: clear all  |  Esc: close",
+                "Up/Down: navigate  |  Ctrl+Up/Down: reorder  |  Enter: play  |  d: remove  |  Shift+Del: delete file"
+                "  |  Ctrl+D: clear all  |  Esc: close",
                 id="pl-hint",
             )
             yield ListView(id="pl-list")
@@ -309,7 +351,7 @@ class PlaylistScreen(ModalScreen):
         songs = self._playlist.all_upcoming()
         try:
             self.query_one("#pl-title", Label).update(
-                f"Playlist — {len(songs)} songs in queue"
+                f"Playlist - {len(songs)} songs in queue"
             )
         except Exception:
             pass
@@ -325,6 +367,30 @@ class PlaylistScreen(ModalScreen):
         self._refresh_list(keep_index=new_idx)
         self._update_title()
 
+    def action_delete_file(self):
+        lv = self.query_one("#pl-list", ListView)
+        idx = lv.index
+        songs = self._playlist.all_upcoming()
+        if idx is None or idx >= len(songs):
+            return
+        path = songs[idx]
+        self.app.push_screen(
+            ConfirmPrompt(f"Delete file from disk?\n\n{song_label(path)}"),
+            lambda yes: self._delete_file(idx, path) if yes else None,
+        )
+
+    def _delete_file(self, idx: int, path: Path):
+        try:
+            delete_song_file(path)
+        except OSError as e:
+            self.notify(f"Delete failed: {e}", severity="error", timeout=5)
+            return
+        self._playlist.remove_all(path)
+        songs = self._playlist.all_upcoming()
+        self._refresh_list(keep_index=min(idx, len(songs) - 1) if songs else None)
+        self._update_title()
+        self.notify(f"Deleted: {song_label(path)[:50]}", timeout=3)
+
     def action_play_selected(self):
         lv = self.query_one("#pl-list", ListView)
         idx = lv.index
@@ -332,8 +398,7 @@ class PlaylistScreen(ModalScreen):
             self.dismiss(("play", idx))
 
     def action_delete_all(self):
-        while self._playlist.all_upcoming():
-            self._playlist.remove(0)
+        self._playlist.clear_upcoming()
         self._refresh_list(keep_index=None)
         self._update_title()
         self.notify("Playlist cleared.", timeout=2)
@@ -372,9 +437,9 @@ class LibraryScreen(ModalScreen):
 
     def compose(self) -> ComposeResult:
         with Container(id="lib-box"):
-            yield Label(f"Library — {len(self._all)} songs", id="lib-title")
+            yield Label(f"Library - {len(self._all)} songs", id="lib-title")
             yield Label(
-                "↑↓: navigate  |  Space: add to end / remove  |  Ctrl+Space: add to front / remove  |  Esc: close",
+                "Up/Down: navigate  |  Space: add to end / remove  |  Ctrl+Space: add to front / remove  |  Esc: close",
                 id="lib-hint",
             )
             yield Input(placeholder="Filter...", id="lib-filter")
@@ -406,9 +471,9 @@ class LibraryScreen(ModalScreen):
             p = r.local_path
             pos = queue_pos.get(p) if p else None
             if pos is not None:
-                label = Label(f"  ☑  [{pos:>3}]  {r.display}", classes="in-queue")
+                label = Label(f"  [x]  [{pos:>3}]  {r.display}", classes="in-queue")
             else:
-                label = Label(f"  ☐         {r.display}")
+                label = Label(f"  [ ]         {r.display}")
             lv.append(ListItem(label))
         if keep_index is not None:
             self.call_after_refresh(lambda: setattr(lv, "index", keep_index))
@@ -487,6 +552,12 @@ class SavePlaylistScreen(ModalScreen):
 
     def on_mount(self):
         self.call_after_refresh(lambda: self.query_one("#savpl-input", Input).focus())
+
+    def action_play_highlighted_next(self):
+        """Queues the highlighted song right after the current one, ignoring checked items."""
+        item = self._highlighted()
+        if item:
+            self.dismiss(("next", [item]))
 
     def action_confirm(self):
         name = self.query_one("#savpl-input", Input).value.strip()
@@ -568,7 +639,7 @@ class SavedPlaylistsScreen(ModalScreen):
 
         try:
             self.query_one("#sp-title", Label).update(
-                f"Saved Playlists — {len(self._playlists)}" if self._playlists else "Saved Playlists"
+                f"Saved Playlists - {len(self._playlists)}" if self._playlists else "Saved Playlists"
             )
         except Exception:
             pass

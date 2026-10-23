@@ -15,19 +15,20 @@ class AudioPlayer:
     def play(self, path: str):
         self.stop()
         with self._lock:
-            self._proc = subprocess.Popen(
+            proc = subprocess.Popen(
                 ["ffplay", "-nodisp", "-autoexit", "-loglevel", "quiet", path],
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
             )
-        threading.Thread(target=self._wait, daemon=True).start()
+            self._proc = proc
+        # Pass proc explicitly: reading self._proc in the thread could pick up a
+        # newer process and fire on_end twice for it.
+        threading.Thread(target=self._wait, args=(proc,), daemon=True).start()
 
-    def _wait(self):
-        proc = self._proc
-        if proc:
-            proc.wait()
-            if proc.returncode == 0:
-                self._on_end()
+    def _wait(self, proc: subprocess.Popen):
+        proc.wait()
+        if proc.returncode == 0:
+            self._on_end()
 
     def pause(self):
         with self._lock:

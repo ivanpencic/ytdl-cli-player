@@ -88,6 +88,12 @@ class PlaylistManager:
                     del self._queue[i]
                     return
 
+    def remove_all(self, path: Path):
+        """Removes every occurrence of path from the upcoming queue."""
+        with self._lock:
+            start = self._current + 1
+            self._queue[start:] = [p for p in self._queue[start:] if p != path]
+
     def clear_upcoming(self):
         """Removes all upcoming (not-yet-played) songs from the queue."""
         with self._lock:

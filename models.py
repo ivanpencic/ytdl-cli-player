@@ -6,6 +6,8 @@ OUTPUT_DIR = Path(__file__).parent / "downloads"
 RECOMMENDED_DIR = OUTPUT_DIR / "recommended"
 PLAYLISTS_DIR = Path(__file__).parent / "playlists"
 
+YT_PREFIX = "[YT]  "
+
 
 @dataclass
 class SearchResult:
@@ -17,6 +19,11 @@ class SearchResult:
     @property
     def is_local(self) -> bool:
         return self.local_path is not None
+
+    @property
+    def title(self) -> str:
+        """Display text without the YouTube marker prefix."""
+        return self.display.removeprefix(YT_PREFIX)
 
     def __hash__(self):
         return hash(self.local_path or self.yt_url)

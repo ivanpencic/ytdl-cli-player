@@ -10,7 +10,14 @@ BUS_NAME = "org.mpris.MediaPlayer2.ytdl"
 class MprisPlayer:
     """MPRIS2 D-Bus service for Bluetooth/media-key control."""
 
-    def __init__(self, on_next: Callable, on_previous: Callable, on_play_pause: Callable):
+    def __init__(
+        self,
+        on_next: Callable,
+        on_previous: Callable,
+        on_play_pause: Callable,
+        on_play: Callable,
+        on_pause: Callable,
+    ):
         import dbus
         import dbus.service
         import dbus.mainloop.glib
@@ -19,7 +26,7 @@ class MprisPlayer:
         dbus.mainloop.glib.DBusGMainLoop(set_as_default=True)
         bus = dbus.SessionBus()
         bus_name = dbus.service.BusName(BUS_NAME, bus)
-        self._obj = _MprisObject(bus_name, on_next, on_previous, on_play_pause)
+        self._obj = _MprisObject(bus_name, on_next, on_previous, on_play_pause, on_play, on_pause)
         self._loop = GLib.MainLoop()
         threading.Thread(target=self._loop.run, daemon=True).start()
 
@@ -33,7 +40,7 @@ class MprisPlayer:
 class _MprisObject:
     """Inner dbus.service.Object — kept separate so MprisPlayer can be imported without dbus."""
 
-    def __init__(self, bus_name, on_next, on_previous, on_play_pause):
+    def __init__(self, bus_name, on_next, on_previous, on_play_pause, on_play, on_pause):
         import dbus
         import dbus.service
 
@@ -45,6 +52,8 @@ class _MprisObject:
         on_next_ = on_next
         on_prev_ = on_previous
         on_pp_ = on_play_pause
+        on_play_ = on_play
+        on_pause_ = on_pause
         outer = self
 
         class _Obj(dbus.service.Object):
@@ -105,16 +114,16 @@ class _MprisObject:
             def Previous(self): on_prev_()
 
             @dbus.service.method(MPRIS_PLAYER_IFACE)
-            def Pause(self): on_pp_()
+            def Pause(self): on_pause_()
 
             @dbus.service.method(MPRIS_PLAYER_IFACE)
             def PlayPause(self): on_pp_()
 
             @dbus.service.method(MPRIS_PLAYER_IFACE)
-            def Stop(self): on_pp_()
+            def Stop(self): on_pause_()
 
             @dbus.service.method(MPRIS_PLAYER_IFACE)
-            def Play(self): on_pp_()
+            def Play(self): on_play_()
 
             @dbus.service.method(MPRIS_PLAYER_IFACE, in_signature="x")
             def Seek(self, offset): pass
@@ -157,10 +166,14 @@ class _MprisObject:
 
 
 def start_mpris(
-    on_next: Callable, on_previous: Callable, on_play_pause: Callable
+    on_next: Callable,
+    on_previous: Callable,
+    on_play_pause: Callable,
+    on_play: Callable,
+    on_pause: Callable,
 ) -> Optional[MprisPlayer]:
     try:
-        return MprisPlayer(on_next, on_previous, on_play_pause)
+        return MprisPlayer(on_next, on_previous, on_play_pause, on_play, on_pause)
     except Exception as e:
         print(f"[MPRIS2] Failed to start (media keys unavailable): {e}")
         return None

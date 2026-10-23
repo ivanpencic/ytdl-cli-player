@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 ytdl player — YouTube Audio TUI
-Ctrl+F: search  |  Ctrl+P: playlist  |  Shift+L: fill lib
+Ctrl+F: search  |  Down: playlist  |  Shift+L: fill lib
 """
 
 import json
@@ -19,17 +19,24 @@ from textual.containers import Container, Vertical
 from textual.widgets import Footer, Header, Label, Static
 
 from audio_player import AudioPlayer
-from download import make_ydl_opts
-from models import OUTPUT_DIR, PLAYLISTS_DIR, RECOMMENDED_DIR
+from download import YdlErrorLog, archived_ids, forget_archived, make_ydl_opts
+from models import OUTPUT_DIR, PLAYLISTS_DIR, RECOMMENDED_DIR, SearchResult
 from mpris import start_mpris
 from playlist import PlaylistManager
 from screens import LibraryScreen, PlaylistScreen, SavedPlaylistsScreen, SavePlaylistScreen, SearchScreen
-from utils import move_to_artist_subdir, normalize_title, scan_songs, song_label, yt_radio, yt_video_id
+from utils import (
+    find_local, move_to_artist_subdir, normalize_title, scan_songs, song_label,
+    yt_id_from_url, yt_radio, yt_video_id,
+)
 
 
 def _title_part(s: str) -> str:
     parts = s.split(" - ", 1)
     return parts[1].strip() if len(parts) == 2 else s
+
+
+# Max candidates actually downloaded per recommendation (each may be rejected by the music filter)
+MAX_REC_ATTEMPTS = 5
 
 
 def _too_similar(a: str, b: str) -> bool:
@@ -87,8 +94,8 @@ class YtdlApp(App):
         yield Header(show_clock=True)
         with Vertical(id="main"):
             with Container(id="now-playing"):
-                yield Label("♪  NOW PLAYING", id="np-header")
-                yield Label("─  nothing  ─",  id="np-title")
+                yield Label("NOW PLAYING",     id="np-header")
+                yield Label("nothing playing", id="np-title")
                 yield Label("",               id="np-status")
             with Container(id="up-next"):
                 yield Label("UP NEXT:", id="un-header")
@@ -101,6 +108,8 @@ class YtdlApp(App):
             on_next=lambda: self.call_from_thread(self.action_skip),
             on_previous=lambda: self.call_from_thread(self.action_previous),
             on_play_pause=lambda: self.call_from_thread(self.action_play_pause),
+            on_play=lambda: self.call_from_thread(self.action_play),
+            on_pause=lambda: self.call_from_thread(self.action_pause),
         )
         self._load_random_local()
         self._refresh_main()
@@ -117,48 +126,84 @@ class YtdlApp(App):
 
     # ── Download ──────────────────────────────────────────────────────────────
 
-    def _start_download(
+    def _download(
         self,
         url: str,
-        single: bool = False,
-        on_file: Optional[Callable] = None,
+        title: str,
         music_only: bool = False,
         recommended: bool = False,
-    ):
+    ) -> tuple[Optional[Path], str]:
+        """Blocking download of one video. Must run in a worker thread.
+
+        Returns (local file, "") or (None, reason) if nothing usable exists.
+        """
+        if not recommended:
+            path = find_local(title)
+            if path:
+                self._set_dl_status(f"Already downloaded: {title[:50]}")
+                return path, ""
+            # Archived but missing on disk means the file was deleted by hand: allow a fresh download.
+            # Recommended mode keeps its archive so deleted recommendations aren't offered again.
+            if forget_archived(OUTPUT_DIR, yt_id_from_url(url)):
+                self._set_dl_status(f"File was deleted, downloading again: {title[:50]}")
+
         found: list[Path] = []
+        log = YdlErrorLog()
 
         def progress_hook(d):
             if d["status"] == "downloading":
                 name = Path(d.get("filename", "?")).stem[:40]
                 pct  = d.get("_percent_str", "").strip()
-                self._dl_status = f"↓  {name}  {pct}"
-                self.call_from_thread(self._update_dl_label)
+                self._set_dl_status(f"Downloading  {name}  {pct}")
             elif d["status"] == "finished":
                 orig = Path(d.get("filename", ""))
                 if orig.name:
                     found.append(orig)
-            elif d["status"] == "error":
-                self._dl_status = "✗  Error"
-                self.call_from_thread(self._update_dl_label)
+
+        try:
+            opts = make_ydl_opts(
+                progress_hook, single=True, music_only=music_only, recommended=recommended, logger=log,
+            )
+            with yt_dlp.YoutubeDL(opts) as ydl:
+                ydl.download([url])
+        except Exception as e:
+            log.last = str(e)
+
+        files = [p for p in found if p.exists()]
+        if files:
+            base_dir = RECOMMENDED_DIR if recommended else OUTPUT_DIR
+            self._set_dl_status(f"Done: {title[:50]}")
+            return move_to_artist_subdir(files[0], base_dir), ""
+
+        # Nothing downloaded: already in the archive (file was moved to an artist
+        # subdir earlier), rejected by a filter, or a real error.
+        path = find_local(title)
+        if path:
+            self._set_dl_status(f"Already downloaded: {title[:50]}")
+            return path, ""
+        reason = log.last or "skipped by filter"
+        self._set_dl_status(f"Failed: {title[:40]}  ({reason[:80]})")
+        return None, reason
+
+    def _download_async(self, item: SearchResult, on_file: Callable[[Path], None]):
+        """Downloads a YouTube result in the background; on_file runs on the UI thread."""
+        self.notify(f"Downloading: {item.title[:50]}...", timeout=3)
 
         def run():
-            try:
-                opts = make_ydl_opts(
-                    progress_hook, single=single,
-                    music_only=music_only, recommended=recommended,
+            path, reason = self._download(item.yt_url, item.title)
+            if path:
+                self.call_from_thread(on_file, path)
+            else:
+                self.call_from_thread(
+                    self.notify, f"Download failed: {item.title[:50]}\n{reason}", severity="error", timeout=8
                 )
-                with yt_dlp.YoutubeDL(opts) as ydl:
-                    ydl.download([url])
-                if on_file:
-                    for path in found:
-                        if path.exists():
-                            on_file(path)
-                self._dl_status = "✓  Done"
-            except Exception as e:
-                self._dl_status = f"✗  {e}"
-            self.call_from_thread(self._update_dl_label)
 
         threading.Thread(target=run, daemon=True).start()
+
+    def _set_dl_status(self, text: str):
+        """Thread-safe status line update."""
+        self._dl_status = text
+        self.call_from_thread(self._update_dl_label)
 
     def _update_dl_label(self):
         try:
@@ -212,15 +257,12 @@ class YtdlApp(App):
         on_found: Callable[[Path], None],
         on_not_found: Optional[Callable[[], None]] = None,
     ):
-        """Fetch one YouTube recommendation for cur_path. Calls on_found(path) or on_not_found()."""
+        """Fetch one YouTube recommendation for cur_path.
+
+        Calls on_found(path) or on_not_found() on the UI thread.
+        """
         current_title_norm = normalize_title(song_label(cur_path))
-        archived_ids: set = set()
-        archive_path = RECOMMENDED_DIR / ".archive"
-        if archive_path.exists():
-            for line in archive_path.read_text().splitlines():
-                parts = line.strip().split()
-                if parts:
-                    archived_ids.add(parts[-1])
+        rec_archived = archived_ids(RECOMMENDED_DIR)
 
         def run():
             try:
@@ -233,32 +275,30 @@ class YtdlApp(App):
                 vid_id = yt_video_id(song_label(cur_path))
                 results = yt_radio(vid_id) if vid_id else []
 
+                attempts = 0
                 for r in results:
+                    if attempts >= MAX_REC_ATTEMPTS:
+                        break
                     if not r.yt_url:
                         continue
-                    res_t = _title_part(normalize_title(r.display))
+                    res_t = _title_part(normalize_title(r.title))
                     if _too_similar(cur_t, res_t):
                         continue
                     if any(_too_similar(res_t, lt) for lt in local_titles):
                         continue
-                    vid = r.yt_url.split("v=")[-1].split("&")[0]
-                    if vid in archived_ids:
+                    if yt_id_from_url(r.yt_url) in rec_archived:
                         continue
 
-                    self.call_from_thread(self.notify, f"Rec: {r.display[6:][:50]}", timeout=3)
-
-                    def _on_file(path: Path):
-                        path = move_to_artist_subdir(path, RECOMMENDED_DIR)
-                        on_found(path)
-
-                    self._start_download(r.yt_url, single=True, on_file=_on_file, music_only=True, recommended=True)
-                    return
-
-                if on_not_found:
-                    on_not_found()
+                    attempts += 1
+                    self.call_from_thread(self.notify, f"Rec: {r.title[:50]}", timeout=3)
+                    path, _ = self._download(r.yt_url, r.title, music_only=True, recommended=True)
+                    if path:
+                        self.call_from_thread(on_found, path)
+                        return
             except Exception:
-                if on_not_found:
-                    on_not_found()
+                pass
+            if on_not_found:
+                self.call_from_thread(on_not_found)
 
         threading.Thread(target=run, daemon=True).start()
 
@@ -275,10 +315,10 @@ class YtdlApp(App):
 
             def on_found(path: Path):
                 self._playlist.add(path)
-                self.call_from_thread(self._refresh_main)
                 self._refilling = False
+                self._refresh_main()
                 if not self._player.playing:
-                    self.call_from_thread(self._play_next)
+                    self._play_next()
 
             def on_not_found():
                 all_local = scan_songs()
@@ -292,11 +332,11 @@ class YtdlApp(App):
                 if candidates:
                     pick = random.choice(candidates)
                     self._playlist.add(pick)
-                    self.call_from_thread(self.notify, f"No rec found, added local: {song_label(pick)[:50]}", timeout=4)
-                    self.call_from_thread(self._refresh_main)
-                    if not self._player.playing:
-                        self.call_from_thread(self._play_next)
+                    self.notify(f"No rec found, added local: {song_label(pick)[:50]}", timeout=4)
                 self._refilling = False
+                self._refresh_main()
+                if candidates and not self._player.playing:
+                    self._play_next()
 
             self._fetch_one_recommendation(cur, on_found, on_not_found)
 
@@ -322,12 +362,12 @@ class YtdlApp(App):
         cur = self._playlist.current
         try:
             self.query_one("#np-title", Label).update(
-                song_label(cur) if cur else "─  nothing  ─"
+                song_label(cur) if cur else "nothing playing"
             )
             if self._player.paused:
-                status = "⏸  paused"
+                status = "paused"
             elif self._player.playing:
-                status = "▶  playing"
+                status = "playing"
             else:
                 status = ""
             flags = []
@@ -342,7 +382,7 @@ class YtdlApp(App):
             for i, s in enumerate(self._playlist.upcoming(20), 1):
                 lines.append(f"  {i}.  {song_label(s)}")
             while len(lines) < 20:
-                lines.append(f"  {len(lines) + 1}.  ─")
+                lines.append(f"  {len(lines) + 1}.  -")
             self.query_one("#un-list", Static).update("\n".join(lines))
         except Exception:
             pass
@@ -356,6 +396,17 @@ class YtdlApp(App):
         else:
             self._player.toggle_pause()
             self._refresh_main()
+
+    def action_play(self):
+        if self._player.paused:
+            self._player.resume()
+            self._refresh_main()
+        elif not self._player.playing:
+            self._play_next()
+
+    def action_pause(self):
+        self._player.pause()
+        self._refresh_main()
 
     def action_toggle_autoplay(self):
         self._autoplay = not self._autoplay
@@ -373,9 +424,10 @@ class YtdlApp(App):
             self._playlist.clear_upcoming()
             self._refilling = False
             self._refill_queue()
-            self.notify("Recommended ON — queue cleared, fetching recommendation...", timeout=4)
+            self.notify("Recommended ON - queue cleared, fetching recommendation...", timeout=4)
         else:
-            self.notify("Recommended OFF", timeout=2)
+            self._autoplay = True
+            self.notify("Recommended OFF  |  Autoplay ON", timeout=2)
         self._refresh_main()
 
     def action_skip(self):
@@ -398,41 +450,37 @@ class YtdlApp(App):
         if action == "play_now":
             item = items[0]
             if item.is_local:
-                self._playlist.add_next(item.local_path)
-                self._player.stop()
-                self._play_next()
+                self._play_now(item.local_path)
             else:
-                self.notify(f"Downloading: {item.display[6:][:50]}...", timeout=3)
-                def on_file_now(path: Path):
-                    path = move_to_artist_subdir(path, OUTPUT_DIR)
-                    self._playlist.add_next(path)
-                    self._player.stop()
-                    self.call_from_thread(self._play_next)
-                self._start_download(item.yt_url, single=True, on_file=on_file_now)
+                self._download_async(item, self._play_now)
             return
 
         for item in items:
             if item.is_local:
-                if action == "next":
-                    self._playlist.add_next(item.local_path)
-                else:
-                    self._playlist.add(item.local_path)
+                self._enqueue(item.local_path, action)
             else:
-                _action = action
-                self.notify(f"Downloading: {item.display[6:][:50]}...", timeout=3)
+                self._download_async(item, lambda path, a=action: self._on_queued_download(path, a))
 
-                def on_file(path: Path, a=_action):
-                    path = move_to_artist_subdir(path, OUTPUT_DIR)
-                    if a == "next":
-                        self._playlist.add_next(path)
-                    else:
-                        self._playlist.add(path)
-                    self.app.call_from_thread(self.notify, f"Done: {song_label(path)}", timeout=3)
-                    self.app.call_from_thread(self._refresh_main)
+        if self._playlist.current is None and self._playlist.all_upcoming():
+            self._play_next()
+        else:
+            self._refresh_main()
 
-                self._start_download(item.yt_url, single=True, on_file=on_file)
+    def _play_now(self, path: Path):
+        """Puts path at the front of the queue and starts it immediately."""
+        self._playlist.add_next(path)
+        self._play_next()
 
-        if self._playlist.current is None and self._playlist.total() > 0:
+    def _enqueue(self, path: Path, action: str):
+        if action == "next":
+            self._playlist.add_next(path)
+        else:
+            self._playlist.add(path)
+
+    def _on_queued_download(self, path: Path, action: str):
+        self._enqueue(path, action)
+        self.notify(f"Added: {song_label(path)[:50]}", timeout=3)
+        if self._playlist.current is None:
             self._play_next()
         else:
             self._refresh_main()
@@ -531,23 +579,30 @@ class YtdlApp(App):
 
         def on_found(path: Path):
             self._playlist.replace_next(path)
-            self.call_from_thread(self._refresh_main)
             self._fetch_rec_pending = False
+            self._refresh_main()
 
         def on_not_found():
-            self.call_from_thread(self.notify, "No recommendation found.", severity="warning", timeout=3)
             self._fetch_rec_pending = False
+            self.notify("No recommendation found.", severity="warning", timeout=3)
 
         self._fetch_one_recommendation(cur, on_found, on_not_found)
 
     def action_quit(self):
+        self.exit()
+
+    def shutdown(self):
+        """Stops ffplay and MPRIS; runs however the app exits (q, Ctrl+C, crash)."""
         self._player.stop()
         if self._mpris:
             self._mpris.stop()
-        self.exit()
 
 
 # ─── Entry Point ──────────────────────────────────────────────────────────────
 
 if __name__ == "__main__":
-    YtdlApp().run()
+    app = YtdlApp()
+    try:
+        app.run()
+    finally:
+        app.shutdown()

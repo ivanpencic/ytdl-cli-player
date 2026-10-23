@@ -1,10 +1,12 @@
 import re
 from pathlib import Path
 from typing import List, Optional
+from urllib.parse import parse_qs, urlparse
 
 import yt_dlp
+from yt_dlp.utils import sanitize_filename
 
-from models import OUTPUT_DIR, SearchResult
+from models import OUTPUT_DIR, RECOMMENDED_DIR, YT_PREFIX, SearchResult
 
 
 def extract_artist(title: str) -> Optional[str]:
@@ -27,8 +29,37 @@ def move_to_artist_subdir(path: Path, base_dir: Path) -> Path:
     return new_path
 
 
+def delete_song_file(path: Path):
+    """Deletes a song from disk, plus its artist folder if that becomes empty."""
+    path.unlink(missing_ok=True)
+    parent = path.parent
+    if parent not in (OUTPUT_DIR, RECOMMENDED_DIR) and parent.is_dir() and not any(parent.iterdir()):
+        parent.rmdir()
+
+
 def song_label(path: Path) -> str:
     return path.stem
+
+
+def yt_id_from_url(url: str) -> str:
+    """Video ID from a youtube.com/watch?v=<id> or youtu.be/<id> URL."""
+    parsed = urlparse(url)
+    v = parse_qs(parsed.query).get("v")
+    return v[0] if v else parsed.path.rstrip("/").rsplit("/", 1)[-1]
+
+
+def yt_filename_stem(title: str) -> str:
+    """Filename stem yt-dlp produces for a video with the given title."""
+    return sanitize_filename(title)
+
+
+def find_local(title: str) -> Optional[Path]:
+    """Returns the already downloaded file for a YouTube title, if any."""
+    stem = yt_filename_stem(title)
+    for r in scan_songs():
+        if r.local_path.stem == stem:
+            return r.local_path
+    return None
 
 
 def normalize_title(title: str) -> str:
@@ -74,7 +105,7 @@ def yt_radio(video_id: str, n: int = 30) -> List[SearchResult]:
                 continue
             entry_url = f"https://www.youtube.com/watch?v={vid_id}"
             views = entry.get("view_count") or 0
-            results.append(SearchResult(display=f"[YT]  {title}", yt_url=entry_url, view_count=views))
+            results.append(SearchResult(display=f"{YT_PREFIX}{title}", yt_url=entry_url, view_count=views))
 
         seen: dict[str, SearchResult] = {}
         for r in results:
@@ -99,7 +130,7 @@ def yt_search(query: str, n: int = 25) -> List[SearchResult]:
             if not url:
                 continue
             raw.append(SearchResult(
-                display=f"[YT]  {title}",
+                display=f"{YT_PREFIX}{title}",
                 yt_url=url,
                 view_count=views,
             ))

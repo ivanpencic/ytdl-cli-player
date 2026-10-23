@@ -22,14 +22,18 @@ check_pkg() {
 }
 
 check_pkg textual
-check_pkg yt_dlp
 
 if [ "$NEED_INSTALL" = true ]; then
     echo "Installing dependencies..."
-    env/bin/python -m pip install textual yt-dlp
+    env/bin/python -m pip install textual
 else
     echo "Dependencies already installed."
 fi
+
+# YouTube changes often and old yt-dlp versions start failing with HTTP 403,
+# so always pull the latest. [default] includes yt-dlp-ejs (JS challenge solver).
+echo "Updating yt-dlp..."
+env/bin/python -m pip install -q -U "yt-dlp[default]"
 
 if ! command -v ffplay >/dev/null 2>&1; then
     echo "Installing ffplay..."
